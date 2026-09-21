@@ -2,9 +2,9 @@
 
 **Multi-Agent Fusion for Glioma Report Generation from Multi-Sequence MRI**
 
-This repository hosts the code and the **supplementary appendix** for the article of the same name, submitted to *IEEE Transactions on Medical Imaging*. IEEE TMI does not accept appendix-style supplementary documents, so the appendix is published here instead. Every cross-reference in the paper of the form **"Appendix A-B"**, **"Appendix B-C"** or **"Appendix C-G"** points into [`appendix.pdf`](appendix.pdf) in this repository.
+This repository hosts the code and the **Technical Implementation and Reproducibility Details** document for the article of the same name, submitted to *IEEE Transactions on Medical Imaging*. IEEE TMI does not accept appendix-style supplementary documents, so it is published here instead. Every cross-reference in the paper of the form **"Appendix A-B"**, **"Appendix B-C"** or **"Appendix C-G"** points into [`appendix.pdf`](appendix.pdf) in this repository.
 
-> 📄 **[Read the appendix →](appendix.pdf)** (26 pages)
+> 📄 **[Technical Implementation and Reproducibility Details →](appendix.pdf)** (26 pages)
 
 ---
 
@@ -22,7 +22,7 @@ The system was evaluated on three cohorts under two independent protocols: an el
 
 ---
 
-## What is in the appendix
+## What is in the document
 
 `appendix.pdf` is organised in three appendices, lettered to match the paper's cross-references exactly.
 
@@ -68,7 +68,7 @@ Figure and table numbering continues that of the paper: the paper ends at Fig. 4
 
 ## Released evaluation artifacts
 
-Beyond the appendix, the following are released so that every number in the paper can be recomputed:
+Beyond this document, the following are released so that every number in the paper can be recomputed:
 
 - the **40 expert-authored RHUH-GBM reference reports** and the protocol under which they were written;
 - the **1137 per-case human rubric score sheets**, with free-text justifications and critical-error flags;
@@ -83,7 +83,7 @@ A trial view of how the human evaluation is carried out is available at **https:
 ## Repository layout
 
 ```
-appendix.pdf      the supplementary appendix (A, B, C) — what the paper cites
+appendix.pdf      Technical Implementation and Reproducibility Details (A, B, C)
 Appendix.md       long-form markdown rendering of the reproducibility record
 Segmentation.png  segmentation pipeline overview
 LICENSE

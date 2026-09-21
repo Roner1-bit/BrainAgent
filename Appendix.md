@@ -1,4 +1,9 @@
-# BrainAgent — Supplementary Appendix: Reproducibility
+# BrainAgent — Reproducibility Record (long form)
+
+> **Note.** This is the long-form markdown rendering of the reproducibility
+> record and extended methods. The authoritative appendix, whose section
+> lettering (Appendix A-B, B-C, C-G …) matches the cross-references in the
+> paper, is [`appendix.pdf`](appendix.pdf).
 
 This document reproduces the supplementary appendix of the paper **"BrainAgent: Multi-Agent Fusion for Glioma Report Generation from Multi-Sequence MRI."** It is a complete, verbatim record of the prompts supplied to the report-generation agents, the consolidation orchestrators, and the LLM judge, together with the model inventory and the hyperparameters used for report generation, automated evaluation, and image analysis.
 
@@ -19,6 +24,36 @@ This document reproduces the supplementary appendix of the paper **"BrainAgent: 
     - [Registration and atlases](#registration-and-atlases)
     - [Tumor metrics](#tumor-metrics)
   - [Reproducibility Notes](#reproducibility-notes)
+- [Extended Methods (Full Detail Condensed from the Main Text)](#extended-methods-full-detail-condensed-from-the-main-text)
+  - [Input Handling and DICOM Conversion](#input-handling-and-dicom-conversion)
+  - [Image Preprocessing](#image-preprocessing)
+    - [RAS+ Reorientation](#ras-reorientation)
+    - [N4 Bias-Field Correction](#n4-bias-field-correction)
+    - [Isotropic Resampling](#isotropic-resampling)
+  - [Skull Stripping and ANTs](#skull-stripping-and-ants)
+  - [Abnormality Segmentation Pipeline](#abnormality-segmentation-pipeline)
+    - [Dataset](#dataset)
+    - [Automatic Box-Prompting and Segmentation Pipeline](#automatic-box-prompting-and-segmentation-pipeline)
+    - [Per-Plane Inference](#per-plane-inference)
+    - [Multi-Plane Majority Voting](#multi-plane-majority-voting)
+    - [MedSAM2 Refinement](#medsam2-refinement)
+    - [Mask Post-Processing](#mask-post-processing)
+  - [Tumor Metrics Computation](#tumor-metrics-computation)
+    - [Volumetry](#volumetry)
+    - [Centroid and Hemisphere Determination](#centroid-and-hemisphere-determination)
+  - [MNI-152 Registration](#mni-152-registration)
+    - [Registration Procedure](#registration-procedure)
+    - [Coordinate Conventions (RAS vs. LPS)](#coordinate-conventions-ras-vs-lps)
+    - [Threading and Reproducibility](#threading-and-reproducibility)
+    - [MNI Brain Mask](#mni-brain-mask)
+  - [Atlas-Based Region Analysis](#atlas-based-region-analysis)
+    - [Atlases](#atlases)
+    - [Overlap Computation](#overlap-computation)
+    - [Per-Region Hemisphere Determination](#per-region-hemisphere-determination)
+  - [Slice Extraction and Batch Image Assembly](#slice-extraction-and-batch-image-assembly)
+  - [Coordinate System Conventions](#coordinate-system-conventions)
+  - [Evaluation Metrics: Finding-Level Precision, Recall, and F1](#evaluation-metrics-finding-level-precision-recall-and-f1)
+    - [Per-Category Metrics](#per-category-metrics)
 
 ---
 
@@ -876,6 +911,175 @@ Tumor sub-compartments follow the BraTS labelling convention: necrotic/non-enhan
 
 ### Reproducibility Notes
 
-1. **Region-count inconsistency in the master orchestrator.** The master system message instructs the model to list the top five affected regions, while the corresponding user prompt instructs it to list the top seven; both are reproduced verbatim.
 2. **Reasoning mode.** Reasoning ("thinking") mode is disabled for the twelve Tier-1 image-analysis agents and enabled for the Tier-2 and Tier-3 consolidation agents.
 3. **Decoding determinism.** No fixed decoding seed is set for the language models; reproducibility relies on the low sampling temperatures (0.1–0.3) together with the fixed registration seed.
+
+---
+
+## Extended Methods (Full Detail Condensed from the Main Text)
+
+To meet the journal page limit, the main paper presents the imaging pipeline in condensed form. This section reproduces the full technical detail of the modules that were shortened, for reproducibility. The content is reproduced from the pre-condensation manuscript.
+
+### Input Handling and DICOM Conversion
+
+The pipeline supports five different folder structures to handle varied clinical and research data sources. These include institutional structures where patient identifiers organize subdirectories with per-modality NIfTI files. It also includes flat naming conventions that encode patient and modality information in the filename. Additionally, it supports DICOM-based formats from clinical PACS systems, which consist of hierarchical study/series directory structures and flat single-folder organizations.
+
+The metadata of the patient is usually extracted from the DICOM files if they are available, especially the age, as this might provide a better context for the agents, which might lead to a better analysis of the patient. For convenience, DICOM images are converted to NIfTI.
+
+### Image Preprocessing
+
+All input volumes (image preprocessing is performed in 3D) undergo a three-stage standardization pipeline designed to match a unified characterization and handle any data inconsistencies (1 mm isotropic resolution in RAS+ orientation).
+
+#### RAS+ Reorientation
+
+All images are reoriented to the Right-Anterior-Superior (RAS+) canonical orientation through analyzing the NIfTI affine matrix and applying the necessary axis permutations and flips. In the RAS+ convention, the X-axis encodes right (+) to left ($-$), the Y-axis encodes anterior (+) to posterior ($-$), and the Z-axis encodes superior (+) to inferior ($-$). This standardizing process is critical for three downstream operations: (i) hemisphere determination in tumor metrics, where centroid $X < 0$ indicates left hemisphere; (ii) MNI-152 registration, which assumes RAS+ input; and (iii) consistent laterality marker placement on visualization slices.
+
+#### N4 Bias-Field Correction
+
+Intensity non-uniformity arising from RF coil inhomogeneity is corrected using the N4 algorithm (N4ITK). The correction operates at four multi-resolution levels with iteration numbers of [50, 50, 30, 20] and convergence tolerance of $10^{-7}$, using a shrink factor of 4 for computational efficiency and a B-spline knot spacing of 200 mm. A non-zero tissue mask is generated by thresholding at 10% of the mean image intensity. Bias correction is performed before skull stripping because the additional tissue context (including the skull) provides a more complete basis for estimating the low-frequency bias field. The estimated bias field is saved as a separate volume for quality verification.
+
+#### Isotropic Resampling
+
+Volumes are resampled to 1 mm isotropic voxel spacing using linear interpolation for anatomical images. This target spacing is configurable via the pipeline configuration settings. Segmentation masks are resampled with nearest-neighbor interpolation to preserve discrete label values. A minimum volume threshold of 1,000 voxels is enforced to reject corrupt or truncated input files.
+
+### Skull Stripping and ANTs
+
+Skull stripping is an optional preprocessing step; it can be disabled if the data is already skull-stripped, even though, if left enabled, it would automatically detect whether the skull is stripped. When enabled, the module supports three algorithms: (i) **HD-BET**, a deep-learning approach using a U-Net architecture that serves as the default method due to its proven high accuracy across different MRI contrasts; (ii) **ANTs** template-based brain extraction, which propagates a template brain mask to patient space via registration; and (iii) **SynthStrip** from the FreeSurfer suite. Skull stripping operates on preprocessed (bias-corrected, resampled) images rather than raw inputs, because cleaner input produces higher-quality brain masks. The module implements graceful fallback: if skull stripping fails for a given modality, the pipeline reverts to using the preprocessed image with skull intact.
+
+### Abnormality Segmentation Pipeline
+
+Tumor segmentation applies a multi-plane voting strategy with the use of ConvNextLocator, a convolutional neural network built on the ConvNeXt feature-extraction backbone.
+
+![Overview of the proposed fully automatic segmentation pipeline.](Segmentation.png)
+
+*Overview of the proposed fully automatic segmentation pipeline, which runs in three successive stages: tumor-presence detection, bounding-box localization, and prompt-based segmentation. A ConvNeXt-Tiny detector operating on 2.5D input (the previous, current, and next slices stacked as three channels) classifies each slice for tumor presence and, where a tumor is detected, regresses a bounding box around it. The predicted box is passed as the sole prompt to MedSAM2, which produces a contour-following tumor mask. Inference is performed independently in the axial, coronal, and sagittal planes, and the three per-plane masks are fused by majority voting, labeling a voxel as tumor when at least two of the three planes agree (see Multi-Plane Majority Voting below).*
+
+#### Dataset
+
+We conducted experiments on the UCSF-PDGM dataset, which contains preoperative multi-parametric brain MRI scans with corresponding expert tumor annotations for patients with diffuse glioma. In this study, we used four MRI sequences available for each case, namely T1, T1c, T2, and FLAIR. These modalities provide complementary anatomical and pathological information and are widely used in brain tumor analysis.
+
+To match the proposed 2.5D formulation, each 3D volume was processed as a sequence of 2D slices. For every central slice, its adjacent previous and next slices were stacked to form a three-channel input. We further evaluated the method in axial, coronal, and sagittal views to examine its robustness across anatomical planes. Ground-truth tumor masks were used to generate slice-level labels for tumor presence and to derive bounding boxes for localization supervision. Slices containing no tumor region were considered negative examples, whereas slices with tumor pixels were used for both classification and box regression training.
+
+This dataset configuration supports the full pipeline studied in this work, including slice-level tumor detection, automatic bounding-box prediction, and prompt-driven segmentation with MedSAM2. Evaluating the framework across multiple MRI sequences and views provides a detailed understanding of its generalization behavior under varying image contrasts and anatomical orientations.
+
+#### Automatic Box-Prompting and Segmentation Pipeline
+
+Our proposed pipeline is designed to achieve fully automatic brain tumor segmentation from MRI without manual interaction at inference time. The framework consists of three successive stages: tumor-presence detection, bounding-box localization, and prompt-based segmentation. Instead of relying on a user-provided box, the system first analyzes each MRI slice to determine whether tumor tissue is present. When an abnormality is detected, the model predicts a bounding box around the suspicious region, which is then used as the prompt for MedSAM2 to generate the final tumor mask.
+
+The detection-localization module is based on a ConvNeXt-Tiny backbone and uses 2.5D input formed by stacking the previous, current, and next slices as three channels. This design allows the model to capture short-range inter-slice context while preserving the efficiency of 2D processing. On top of the shared backbone, the network uses two task-specific branches. The classification branch determines whether a slice is tumor-positive, while the localization branch predicts the bounding-box coordinates. For localization, the regression head operates on the stage3 feature map. It begins with Group Normalization, followed by a $3 \times 3$ convolution with padding 1 that reduces the channel dimension from 384 to 128 while refining spatial information. A GELU activation is then applied, after which the feature map is flattened and passed through a fully connected layer that projects it into a 256-dimensional hidden representation. After a second GELU activation, a final linear layer produces four outputs, and a sigmoid activation constrains them to $[0,1]$, resulting in a normalized bounding box in center-coordinate format.
+
+During training, the classification branch is optimized using focal loss to address the strong imbalance between tumor-positive and tumor-negative slices. The localization branch is trained with a hybrid loss combining L1 and Complete IoU, encouraging both coordinate accuracy and geometric agreement between predicted and target boxes. In addition, area-aware weighted sampling is employed to increase the representation of slices containing small tumors, which are generally harder to localize and more sensitive to prompt errors. Once the predicted box is obtained, it is provided to MedSAM2 as an automatic prompt, enabling a fully automated segmentation workflow that preserves the strengths of prompt-based foundation models while removing the need for manual initialization.
+
+#### Per-Plane Inference
+
+For each of the three canonical anatomical planes (axial, coronal, sagittal), the 3D volume is decomposed into 2D slices along the corresponding axis (Z for axial, Y for coronal, X for sagittal). Each slice undergoes preprocessing to match the training data pipeline: a 90-degree rotation for display orientation, intensity normalization to the $[0, 255]$ range, and bilinear resize to $256 \times 256$ pixels. Slices are processed in GPU batches of 16. For each slice, the model outputs a confidence score $c \in [0, 1]$ and a normalized bounding box $[\hat{c}_x, \hat{c}_y, \hat{w}, \hat{h}]$. Slices with $c > 0.5$ (configurable threshold) are classified as tumor-containing, and the bounding box is converted to pixel coordinates to generate a binary mask within the detected region. After inference, the *inverse* of the preprocessing rotation is applied to map each 2D mask back into the correct 3D volume coordinates.
+
+A critical implementation detail is that the ConvNextLocator models were trained on PNG slices extracted with a specific 90-degree rotation transform. To maintain inference compatibility, the identical rotation is applied during slice extraction, and its inverse is applied when reassembling the 3D mask.
+
+Twelve sets of model weights are maintained, one per combination of four modalities (T1, T1c, T2, FLAIR) and three planes (axial, coronal, sagittal), enabling modality-specific and view-specific inference.
+
+#### Multi-Plane Majority Voting
+
+The three per-plane 3D masks are combined using majority voting: a voxel is classified as tumor if and only if at least two out of three planes agree on its tumor status:
+
+$$M_{\text{final}}(v) = \mathbb{1}\!\left[\sum_{p \in \{\text{ax}, \text{cor}, \text{sag}\}} \mathbb{1}[M_p(v) > 0] \geq 2\right]$$
+
+where $M_p(v)$ denotes the binary mask value at voxel $v$ from plane $p$. This strategy significantly reduces false positives arising from partial-volume artifacts or imaging artifacts in a single viewing plane, while maintaining sensitivity by requiring agreement from only two of three independent perspectives.
+
+#### MedSAM2 Refinement
+
+When enabled, the Segment Anything Model for Medical images (MedSAM2), configured with the tiny hierarchical design variant, refines the bounding-box detections from ConvNextLocator. For each tumor-containing slice, the detected bounding box is passed to the MedSAM2 predictor, which generates a precise segmentation mask with anatomically aware boundaries within the bounding box. This replaces the simple rectangular fill with a contour-following mask. If MedSAM2 refinement fails for any slice, the system falls back to the ConvNextLocator box mask for that slice.
+
+#### Mask Post-Processing
+
+After segmentation, a critical alignment step resamples the generated mask to match the spatial frame (orientation, resolution, grid) of the preprocessed structural images using nearest-neighbor interpolation. This prevents geometric errors including left-right flips, when the MNI warp is subsequently applied to the mask.
+
+The complete segmentation process generates full traceability records including per-slice confidence scores, bounding box coordinates, tumor pixel counts, and per-plane processing times, enabling post-hoc quality assessment of every inference decision.
+
+### Tumor Metrics Computation
+
+The tumor metrics module computes quantitative measurements from the segmentation mask following the BraTS multi-class labeling convention: label 1 for necrotic/non-enhancing tumor core (NCR/NET), label 2 for peritumoral edema (ED), label 3 for gadolinium-enhancing tumor (ET), and label 4 as an alternative enhancing tumor label used in some datasets. It is very important to note that the tumor is calculated for each sequence separately, and then, based on the results, we obtain a tumor size for each MRI sequence. Consequently, this module calculates the median tumor size and, based on it, selects the tumor segmentation closest to the median as the primary sequence for the remaining modules.
+
+#### Volumetry
+
+Total and per-class tumor volumes are computed as:
+
+$$V_k = N_k \cdot \Delta x \cdot \Delta y \cdot \Delta z \cdot 10^{-3} \quad [\text{cm}^3],$$
+
+where $N_k$ is the number of voxels with label $k$ and $(\Delta x, \Delta y, \Delta z)$ are the voxel dimensions in millimeters obtained from the image header. Per-slice tumor areas are computed along the axial axis as $A_s = n_s \cdot \Delta x \cdot \Delta y$ [mm²], where $n_s$ is the number of tumor voxels in slice $s$.
+
+#### Centroid and Hemisphere Determination
+
+The tumor centroid is computed in world coordinates using the NIfTI affine transformation matrix $\mathbf{A}$:
+
+$$\mathbf{c}_{\text{world}} = \mathbf{A} \cdot \begin{bmatrix} \bar{i} \\ \bar{j} \\ \bar{k} \\ 1 \end{bmatrix},$$
+
+where $(\bar{i}, \bar{j}, \bar{k})$ is the mean voxel position of all tumor voxels. When available, the MNI-registered mask is preferred for centroid computation because MNI space provides a reliable anatomical midline at $X = 0$, independent of potentially inconsistent native-space DICOM orientation headers. Hemisphere determination uses a 5 mm threshold around the midline: $c_x < -5$ mm indicates left hemisphere, $c_x > +5$ mm indicates right hemisphere, and $|c_x| \leq 5$ mm indicates midline/bilateral involvement.
+
+### MNI-152 Registration
+
+Patient brain volumes are registered to the MNI-152 standard space (ICBM 2009a, non-linear symmetric, 1 mm resolution, $197 \times 233 \times 189$ voxels) using the ANTs Symmetric Normalization (SyN) algorithm. SyN is a diffeomorphic registration method that produces smooth, invertible deformation fields, preserving brain topology while permitting large inter-subject anatomical differences.
+
+#### Registration Procedure
+
+The registration is performed on a reference structural image, preferring skull-stripped data (registration also runs on skull-retained images but yields better results on skull-stripped inputs, as used in our pipeline), and produces two transform components: a non-linear warp field stored as a volumetric deformation image and a linear affine matrix. The combined transform maps any point from native patient space to MNI space. These transforms are then applied to all remaining modality volumes and the segmentation mask. Linear interpolation is used for anatomical images; nearest-neighbor interpolation is used for segmentation masks to preserve discrete label values.
+
+#### Coordinate Conventions (RAS vs. LPS)
+
+A critical technical consideration concerns the handling of coordinate conventions. All NIfTI volumes are stored in the RAS (Right-Anterior-Superior) convention, whereas ANTs operates internally in the LPS (Left-Posterior-Superior) convention. The NIfTI loading mechanism within ANTs automatically handles this RAS-to-LPS conversion. An early implementation discovered that directly constructing ANTs image objects from numpy arrays with spatial metadata extracted from NIfTI headers in RAS convention caused systematic left-right flips, because the registration framework interpreted the RAS-encoded origin and direction vectors as LPS. The solution is to always load images from disk through the standard ANTs file reader, which performs the conversion automatically. Additionally, input volumes must be cast to float32 prior to loading, as the registration framework may return all-zero results for unsigned or signed 16-bit integer data types.
+
+#### Threading and Reproducibility
+
+The registration module dynamically distributes 80% of available CPU cores (minimum of ~4) and enforces deterministic performance by fixing the random seed. Thread counts are propagated to ITK, OpenMP, MKL, OpenBLAS, and NumExpr through environment variables at module load time, assuring consistent thread utilization across all numerical libraries involved in the registration.
+
+#### MNI Brain Mask
+
+After registration, a binary brain mask is created by thresholding the MNI template at 1% of its maximum intensity. This mask is applied to registered anatomical images to remove registration artifacts outside the brain boundary. Importantly, the mask is *not* applied to registered segmentation masks, as tumor regions extending beyond the template brain boundary need to be preserved.
+
+### Atlas-Based Region Analysis
+
+Tumor extent is mapped to named anatomical brain regions using two complementary standard brain atlases.
+
+#### Atlases
+
+The Harvard-Oxford cortical atlas provides 48 cortical regions as a maximum probability map thresholded at 25%, with 0-based label indexing where the first label ("Background") maps to atlas value 0. The Pauli 2017 subcortical atlas provides 16 subcortical nuclei (including caudate nucleus, putamen, globus pallidus, thalamus, hippocampus, amygdala, nucleus accumbens, and subthalamic nucleus) with 1-based label indexing where the first label in the list maps to atlas value 1 rather than 0. This indexing distinction is handled via an explicit atlas-type parameter, eliminating a class of subtle off-by-one errors that arise when both atlases are processed with the same indexing logic. In other words, based on this module, we provide the affected regions of the tumor to the agents to minimize the room for errors and hallucinations.
+
+#### Overlap Computation
+
+Each atlas is first resampled to the MNI-registered mask grid using nearest-neighbor interpolation to ensure voxel-by-voxel alignment. For each atlas region, the overlap is computed as the number of voxels where both the tumor mask and the region mask are non-zero:
+
+$$O_r = \sum_v \mathbb{1}[M(v) > 0] \cdot \mathbb{1}[A(v) = r],$$
+
+where $M(v)$ is the tumor mask value, $A(v)$ is the atlas label, and $r$ is the region index. The overlap volume is computed as $V_r = O_r \cdot \Delta v \cdot 10^{-3}$ [cm³] where $\Delta v$ is the voxel volume in mm³, and the percentage involvement is $P_r = 100 \cdot O_r / N_{\text{total}}$. Results are sorted by percentage involvement in descending order and output as both tabular data (per-region metrics with region name, voxel count, volume, and percentage) and a human-readable markdown summary (which is fed to the agents to provide better context on which brain regions are affected).
+
+#### Per-Region Hemisphere Determination
+
+Hemisphere assignment is performed per-region rather than globally, because a tumor spanning the midline may overlap with different atlas regions in different hemispheres. For each region with non-zero overlap, the mean MNI-space position of the overlapping voxels is calculated using the affine matrix and classified using the same 5 mm midline threshold described in Tumor Metrics Computation. Region labels are prefixed with the determined hemisphere (e.g., "Left Frontal Pole", "Right Insular Cortex", or "Bilateral Thalamus").
+
+### Slice Extraction and Batch Image Assembly
+
+Two stages prepare visual inputs for the LLM agents. First, individual 2D PNG slices are extracted from each modality volume across all three anatomical orientations, with a semi-transparent, color-coded bounding box surrounding the necrotic core, colored light green. This semi-transparency level provides sufficient overlay visibility without obscuring the underlying MRI signal-intensity patterns that the vision-language agents must interpret. Laterality markers ("R" and "L") are added according to radiological convention: on axial and coronal views, "R" appears on the viewer's left, corresponding to the patient's right hemisphere (to provide correct orientation to the agents).
+
+Second, individual slices are assembled into grid images ($3 \times 2 = 6$ slices per grid), producing batch images that serve as the primary visual input to the LLM vision agents. This batching strategy harmonizes information density — ensuring sufficient anatomical coverage per image — with the input-resolution constraints of current vision-language models.
+
+### Coordinate System Conventions
+
+All images in the pipeline are standardized to the RAS+ convention (Right-Anterior-Superior), consistent with the NIfTI standard and MNI-152 space. The X-axis encodes right (+) to left ($-$), the Y-axis encodes anterior (+) to posterior ($-$), and the Z-axis encodes superior (+) to inferior ($-$). ANTs internally operates in the LPS (Left-Posterior-Superior) convention; the conversion between RAS and LPS is handled automatically during standard NIfTI file loading within the ANTs framework. An early implementation identified a systematic left-right flip caused by supplying RAS-encoded spatial metadata directly to an interface that expected LPS-encoded values, stressing the importance of using the standard file-loading pathway that performs convention conversion automatically.
+
+### Evaluation Metrics: Finding-Level Precision, Recall, and F1
+
+From the aggregate counts (TP, FP, FN), we compute standard information-retrieval metrics. Precision quantifies the proportion of reported findings that are correct,
+
+$$\mathrm{Precision} = \frac{\mathrm{TP}}{\mathrm{TP} + \mathrm{FP}},$$
+
+such that low Precision signals hallucination. Recall quantifies the proportion of reference findings that were captured,
+
+$$\mathrm{Recall} = \frac{\mathrm{TP}}{\mathrm{TP} + \mathrm{FN}},$$
+
+such that low Recall signals omission. The two are combined through their harmonic mean, which penalizes imbalance between Precision and Recall and yields a single balanced score,
+
+$$F_{1} = 2 \cdot \frac{\mathrm{Precision} \cdot \mathrm{Recall}}{\mathrm{Precision} + \mathrm{Recall}}.$$
+
+#### Per-Category Metrics
+
+In addition to the aggregate triple $(\mathrm{Precision}, \mathrm{Recall}, F_1)$, we compute per-category $(\mathrm{Precision}_c, \mathrm{Recall}_c, F_{1,c})$ for each of the eleven finding categories $c$. Category-level metrics expose systematic failure modes that aggregate scores may obscure: uniformly high $F_1$ with degraded performance restricted to the lesion-location category, for example, would indicate a lateralization or localization failure rather than a global reporting deficit, and likewise for diagnosis, recommendations, and other categories. For each evaluated patient, the judge emits a structured output containing the two per-report finding inventories with category labels, the per-finding classifications with short rationales, the aggregate TP, FP, and FN counts, the overall $(\mathrm{Precision}, \mathrm{Recall}, F_1)$ triple, and the per-category metrics.

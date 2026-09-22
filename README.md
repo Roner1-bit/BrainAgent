@@ -4,7 +4,11 @@
 
 This repository hosts the code and the **Technical Implementation and Reproducibility Details** document for the article of the same name, submitted to *IEEE Transactions on Medical Imaging*. IEEE TMI does not accept appendix-style supplementary documents, so it is published here instead. Every cross-reference in the paper of the form **"Appendix A-B"**, **"Appendix B-C"** or **"Appendix C-G"** points into [`appendix.pdf`](appendix.pdf) in this repository.
 
-> 📄 **[Technical Implementation and Reproducibility Details →](appendix.pdf)** (26 pages)
+> 📄 **[Technical Implementation and Reproducibility Details →](appendix.pdf)** (27 pages)
+
+![Overview of the proposed fully automatic segmentation pipeline.](Segmentation.png)
+
+*The segmentation pipeline that grounds every agent: a ConvNeXt-Tiny detector on 2.5D input classifies each slice for tumour presence and regresses a bounding box; the box is passed as the sole prompt to MedSAM2; the three per-plane masks are fused by majority voting (Appendix C-G, Fig. 7).*
 
 ---
 
@@ -59,10 +63,10 @@ The system was evaluated on three cohorts under two independent protocols: an el
 | **C-D** | **Complete report-generation agent prompts**, verbatim |
 | **C-E** | **Complete orchestrator prompts**, verbatim |
 | **C-F** | **The full LLM-as-judge prompt** and the finding-level F1 definition |
-| **C-G** | Computer-vision hyperparameters: ConvNextLocator, MedSAM2, preprocessing, skull stripping, registration and atlases, tumour metrics |
+| **C-G** | Computer-vision hyperparameters: ConvNextLocator, MedSAM2, preprocessing, skull stripping, registration and atlases, tumour metrics (**Fig. 7**) |
 | **C-H** | Reproducibility notes |
 
-Figure and table numbering continues that of the paper: the paper ends at Fig. 4 and Table I, so **Figs. 5–6** and **Tables II–IX** belong to the appendix.
+Figure and table numbering continues that of the paper: the paper ends at Fig. 4 and Table I, so **Figs. 5–7** and **Tables II–IX** belong to the appendix.
 
 ---
 
